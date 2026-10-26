@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# ravn-niri-sync: sincronizador idempotente de la capa niri para $HOME.
+# Parte de ravn-home-niri.
+set -euo pipefail
+
+TARGET="${HOME}"
+SOURCE="/usr/share/ravn/niri"
+RUN_POSTINSTALL=0
+VERBOSE=0
+
+usage() {
+  cat << USAGE
+Uso: $(basename "$0") [OPCIONES]
+
+Sincroniza idempotentemente la capa ravn-home-niri hacia el \$HOME del usuario.
+
+Opciones:
+  -t, --target DIR     Directorio base destino (por defecto: \$HOME)
+  -s, --source DIR     Directorio base de la capa ravn (por defecto: /usr/share/ravn/niri)
+  -p, --postinstall    Ejecuta el script de postinstalacion al terminar
+  -v, --verbose        Muestra todas las comprobaciones
+  -h, --help           Muestra esta ayuda
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t|--target)
+      TARGET="$2"
+      shift 2
+      ;;
+    -s|--source)
+      SOURCE="$2"
+      shift 2
+      ;;
+    -p|--postinstall)
+      RUN_POSTINSTALL=1
+      shift
+      ;;
+    -v|--verbose)
+      VERBOSE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Error: opcion desconocida '$1'" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+link_item() {
+  local rel_dest="$1"
+  local rel_src="$2"
+  local dest="${TARGET}/${rel_dest}"
+  local src="${SOURCE}/${rel_src}"
+
+  if [[ ! -e "$src" && ! -L "$src" ]]; then
+    return 0
+  fi
+
+  if [[ -L "$dest" && "$(readlink "$dest")" == "$src" ]]; then
+    [[ $VERBOSE -eq 1 ]] && echo "OK (sin cambios): $dest -> $src"
+    return 0
+  fi
+
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    [[ $VERBOSE -eq 1 ]] && echo "Destino existe y difiere: $dest"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$dest")"
+  ln -s "$src" "$dest"
+  echo "Enlazado: $dest -> $src"
+}
+
+init_loader() {
+  local rel_dest="$1"
+  local content="$2"
+  local dest="${TARGET}/${rel_dest}"
+
+  if [[ -e "$dest" || -L "$dest" ]]; then
+    [[ $VERBOSE -eq 1 ]] && echo "OK (existe loader): $dest"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$dest")"
+  printf '%s\n' "$content" > "$dest"
+  echo "Creado loader: $dest"
+}
+
+echo "==> ravn-niri-sync: sincronizando $TARGET desde $SOURCE"
+
+# 1. Cargador de niri con include nativo de KDL
+init_loader ".config/niri/config.kdl" \
+'// ravn-home-niri: carga la configuracion base del sistema
+include "/usr/share/ravn/niri/niri/config.kdl"
+
+// Sobrescrituras locales y salidas de maquina
+include optional=true "outputs.kdl"
+'
+
+# 2. Clavis y matugen
+link_item ".config/clavis/config.json" "clavis/config.json"
+link_item ".config/clavis/matugen/config.toml" "clavis/matugen/config.toml"
+
+# 3. Environment.d
+link_item ".config/environment.d/clavis-mpvpaper.conf" "environment.d/clavis-mpvpaper.conf"
+
+# 4. Wallpapers y temas matugen compartidos
+link_item ".local/share/clavis/wallpapers" "share/clavis/wallpapers"
+link_item ".local/share/statindet-niri" "share/statindet-niri"
+
+# 5. Binarios de usuario
+link_item ".local/bin/clavis-mpvpaper.sh" "bin/clavis-mpvpaper.sh"
+link_item ".local/bin/optimize-wallpaper" "bin/optimize-wallpaper"
+link_item ".local/bin/niri-dotfiles-postinstall" "bin/niri-dotfiles-postinstall"
+link_item ".local/bin/ravn-niri-postinstall" "bin/ravn-niri-postinstall"
+
+if [[ $RUN_POSTINSTALL -eq 1 ]]; then
+  echo "==> ravn-niri-sync: ejecutando postinstall..."
+  "${SOURCE}/bin/niri-dotfiles-postinstall"
+fi
+
+echo "==> ravn-niri-sync: completado exitosamente"
